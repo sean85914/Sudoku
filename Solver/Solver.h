@@ -3,7 +3,7 @@
 
 #include <unordered_map>
 #include <map>
-#include <memory>
+#include <stack>
 #include "Problem/Problem.h"
 #ifdef OPENMP
 #include <mutex>
@@ -18,28 +18,26 @@ namespace Sudoku
     #endif
     using FrequencyMap = std::unordered_map<int, std::pair<int, Coord>>;
 
-    struct TreeNode
+    struct Node
     {
         Coord coord;
         Aux aux;
         std::vector<int> candidates;
         std::vector<bool> guessed;
         std::vector<std::pair<Coord, Coord>> common;
-        std::shared_ptr<TreeNode> left;
-        std::shared_ptr<TreeNode> right;
-        std::weak_ptr<TreeNode> parent;
 
-        TreeNode(Coord coord, std::vector<int> candidates,
-                Aux aux, std::vector<std::pair<Coord, Coord>> common,
-                std::shared_ptr<TreeNode> parent=nullptr)
-            : coord(coord), aux(aux), common(common), candidates(candidates), parent(parent)
+        Node(Coord coord, Aux aux, std::vector<std::pair<Coord, Coord>> common)
+            : coord(coord), aux(aux), common(common)
         {
+            if(aux.find(coord) != aux.end())
+            {
+                candidates = aux[coord];
+            }
             #ifdef VERBOSE
             std::cout << "Init node (" << static_cast<void*>(this)
                 << ") with " << coord << ", "
-                << aux.size() << " aux state, "
-                << candidates.size() << " aux and parent "
-                << parent.get() << ")\n";
+                << aux.size() << " aux state and "
+                << candidates.size() << " aux\n";
             #endif
             guessed = std::vector<bool>(candidates.size(), false);
         }
@@ -72,7 +70,7 @@ namespace Sudoku
     {
     public:
         Solver(const char*);
-        void setCell(Coord coord, int value);
+        void setCell(Coord coord, int value, bool add_in_stack=true);
         void generateAux(Coord coord);
         void removeSameRowAux(Coord coord, std::vector<int> values, std::vector<Coord> excluded_coords={});
         void removeSameColumnAux(Coord coord, std::vector<int> values, std::vector<Coord> excluded_coords={});
@@ -84,6 +82,7 @@ namespace Sudoku
         void displayAux(void);
         void displayCommonAux(void);
         void displayFrequencyMap(Unit unit, unsigned int number, FrequencyMap map);
+        void displayGuessHistory(void);
         void solve(bool show_status=false);
         void showStatus(void);
         bool isRecordedCell(Coord coord);
@@ -99,8 +98,7 @@ namespace Sudoku
         int m_iter;
         int m_guess_num;
         int m_backtrace_num;
-        std::shared_ptr<TreeNode> m_guessed_root;
-        std::shared_ptr<TreeNode> m_guessed_curr;
+        std::stack<Node> m_guessed;
         #ifdef OPENMP
         std::mutex m_mutex;
         #endif

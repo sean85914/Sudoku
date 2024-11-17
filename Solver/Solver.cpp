@@ -1,7 +1,6 @@
 #include <sstream>
 #include <cassert>
 #include <algorithm>
-#include <regex>
 #ifdef OPENMP
 #include <omp.h>
 #endif
@@ -15,9 +14,7 @@ namespace Sudoku
         :Problem(filename),
         m_iter(0),
         m_guess_num(0),
-        m_backtrace_num(0),
-        m_guessed_root(nullptr),
-        m_guessed_curr(nullptr)
+        m_backtrace_num(0)
     {
         auto tic = std::chrono::system_clock::now();
         auto coords = getUnsolved();
@@ -37,23 +34,20 @@ namespace Sudoku
         #endif
     }
 
-    void Solver::setCell(Coord coord, int value)
+    void Solver::setCell(Coord coord, int value, bool add_in_stack)
     {
         Problem::setCell(coord, value);
-        if(m_guessed_curr && value != 0)
+        if(!m_guessed.empty() && value != 0 && add_in_stack)
         {
-            std::shared_ptr<TreeNode> node = std::make_shared<TreeNode>(
-                coord, std::vector<int>{}, Aux{}, std::vector<std::pair<Coord, Coord>>{}, m_guessed_curr);
-            m_guessed_curr->right = node;
-            m_guessed_curr = node;
+            Node node = Node(coord, Aux{}, std::vector<std::pair<Coord, Coord>>());
             #ifdef VERBOSE
-            std::cout << "Guess node set to " << m_guessed_curr.get()
-                << " (parent: " << m_guessed_curr->parent.lock().get() << ")\n";
+            std::cout << "Stack add node " << &node << "\n";
             #endif
+            m_guessed.push(node);
         }
         /*
          * removeAux may raise exception
-         * make sure node is added into tree for backtrace
+         * make sure node is added into stack for backtrace
          */
         if(value != 0)
         {
@@ -389,14 +383,11 @@ namespace Sudoku
                     exit(-1);
                 }
                 backtrace();
-                int guessed_number = m_guessed_curr->getGuessedNumber();
                 #ifdef VERBOSE
-                std::cout << "After back trace, guess node becomes " << m_guessed_curr.get() << "\n";
-                std::cout << "Guess " << m_guessed_curr->coord << " to " << guessed_number << "\n";
+                std::cout << "After backtrace, stack top set to " << &m_guessed.top() << "\n";
                 #endif
-                updateStatus(m_guessed_curr->coord);
-                Problem::setCell(m_guessed_curr->coord, guessed_number);
-                removeAux(m_guessed_curr->coord, {guessed_number});
+                int guessed_number = m_guessed.top().getGuessedNumber();
+                setCell(m_guessed.top().coord, guessed_number, false);
             }
             if(show_status)
                 showStatus();
@@ -429,6 +420,27 @@ namespace Sudoku
             {
                 std::cout << "\t" << pair.first << ", " << pair.second << "\n";
             }
+        }
+    }
+
+    void Solver::displayGuessHistory(void)
+    {
+        if(m_guessed.size() == 0)
+            return;
+        std::stack<Node> guess_history(m_guessed);
+        std::vector<Coord> history;
+        while(!guess_history.empty())
+        {
+            while(guess_history.top().candidates.empty())
+                guess_history.pop();
+            history.push_back(guess_history.top().coord);
+            guess_history.pop();
+        }
+        std::reverse(history.begin(), history.end());
+        std::cout << "Guess history: \n";
+        for(auto coord: history)
+        {
+            std::cout << "  " << coord << ": " << getCell(coord) << "\n";
         }
     }
 
@@ -585,92 +597,62 @@ namespace Sudoku
         #endif
         ++m_guess_num;
         Coord coord;
-        std::vector<int> candidates;
         if(m_common_aux.size() != 0)
         {
             coord = m_common_aux[0].first;
-            candidates = m_aux[coord];
         }
         else
         {
             int cnt = 2;
-            while(candidates.size() == 0)
+            bool found = false;
+            while(!found)
             {
                 for(auto pair: m_aux)
                 {
                     if(pair.second.size() == cnt)
                     {
                         coord = pair.first;
-                        candidates = pair.second;
+                        found = true;
                         break;
                     }
                 }
                 ++cnt;
             }
         }
-        std::shared_ptr<TreeNode> node = std::make_shared<TreeNode>(
-            coord, candidates, Aux(m_aux), m_common_aux, m_guessed_curr);
-        int guessed_number = node->getGuessedNumber();
+        Node node = Node(coord, m_aux, m_common_aux);
+        m_guessed.push(node);
         #ifdef VERBOSE
-        std::cout << "Guess " << coord << " to " << guessed_number << "\n";
+        std::cout << "Stack add node " << &node << "\n";
         #endif
-        if(m_guessed_curr == nullptr)
-        {
-            m_guessed_root = node;
-            #ifdef VERBOSE
-            std::cout << "Guess root set to " << m_guessed_root.get() << "\n";
-            #endif
-            setCell(coord, guessed_number);
-            m_guessed_curr = m_guessed_root;
-        }
-        else
-        {
-            // m_guessed_curr set, can't use setCell
-            updateStatus(coord);
-            Problem::setCell(coord, guessed_number);
-            removeAux(coord, {guessed_number});
-            m_guessed_curr->left = node;
-            m_guessed_curr = node;
-        }
+        int guessed_number = node.getGuessedNumber();
+        setCell(coord, guessed_number, false);
     }
 
     void Solver::backtrace(void)
     {
         ++m_backtrace_num;
         #ifdef VERBOSE
-        std::cout << "Incorrect assumption, start recovering from "
-            << m_guessed_curr.get() << "...\n";
+        std::cout << "Incorrect assumption, start recovering from " << &m_guessed.top() << " ...\n";
         #endif
-        while(m_guessed_curr->parent.lock())
+        while(!m_guessed.empty())
         {
-            setCell(m_guessed_curr->coord, 0);
+            Node node = m_guessed.top();
+            setCell(node.coord, 0);
             #ifdef VERBOSE
-            std::cout << "[Backtrace] " << m_guessed_curr->coord << " reset to 0\n";
+            std::cout << "[Backtrace] " << node.coord << " reset to 0\n";
             #endif
-            if(m_guessed_curr->parent.lock()->left == m_guessed_curr)
+            if(node.candidates.size() != 0)
             {
-                bool allGuessed = m_guessed_curr->getAllGuessed();
-                #ifdef VERBOSE
-                std::cout << "Meet left tree " << m_guessed_curr.get()
-                    << ", all guessed? " << (allGuessed? "true" : "false")
-                    << ", guessed? ";
-                for(auto guessed: m_guessed_curr->guessed)
-                    std::cout << guessed << " ";
-                std::cout << "\n";
-                #endif
+                bool allGuessed = node.getAllGuessed();
                 if(!allGuessed)
                 {
                     break;
                 }
             }
-            m_guessed_curr = m_guessed_curr->parent.lock();
-            #ifdef VERBOSE
-            std::cout << "[Backtrace] Guess node set to " << m_guessed_curr.get() << "\n";
-            #endif
+            m_guessed.pop();
         }
-        setCell(m_guessed_curr->coord, 0);
-        m_aux = m_guessed_curr->aux;
-        m_common_aux = m_guessed_curr->common;
+        m_aux = m_guessed.top().aux;
+        m_common_aux = m_guessed.top().common;
         #ifdef VERBOSE
         std::cout << "[Backtrace] Status: \n";
         showStatus();
